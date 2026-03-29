@@ -70,20 +70,19 @@ export default function LiveMap({
     () =>
       L.divIcon({
         className: "map-marker-wrapper",
-        html: '<span class="destination-pin"><span class="destination-pin-core"></span></span>',
-        iconSize: [26, 38],
-        iconAnchor: [13, 36],
+        html: '<span class="bk-destination-pin">🍔<span class="bk-destination-label">BK</span></span>',
+        iconSize: [42, 42],
+        iconAnchor: [21, 36],
       }),
     []
   );
 
-  const targetIcon = useMemo(
+  const requestedIcon = useMemo(
     () =>
-      L.divIcon({
-        className: "map-marker-wrapper",
-        html: '<span class="target-pin"></span>',
-        iconSize: [20, 20],
-        iconAnchor: [10, 10],
+      L.icon({
+        iconUrl: "/map.png",
+        iconSize: [34, 34],
+        iconAnchor: [17, 30],
       }),
     []
   );
@@ -113,14 +112,11 @@ export default function LiveMap({
       ) : null}
 
       {destination ? (
-        <Marker
-          position={[destination.lat, destination.lng]}
-          icon={destinationMode === "bk" ? destinationIcon : targetIcon}
-        />
+        <Marker position={[destination.lat, destination.lng]} icon={destinationIcon} />
       ) : null}
 
       {requestedLocation ? (
-        <Marker position={[requestedLocation.lat, requestedLocation.lng]} icon={targetIcon} />
+        <Marker position={[requestedLocation.lat, requestedLocation.lng]} icon={requestedIcon} />
       ) : null}
 
       {routeCoordinates.length > 1 ? (

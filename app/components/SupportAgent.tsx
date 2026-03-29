@@ -8,8 +8,20 @@ type ChatMessage = {
   text: string;
 };
 
-const BOT_THINK_MIN_MS = 6200;
-const BOT_THINK_SPREAD_MS = 2200;
+type CaptchaTile = {
+  id: string;
+  imageUrl: string;
+  label: string;
+  match: boolean;
+};
+
+type CaptchaChallenge = {
+  prompt: string;
+  tiles: CaptchaTile[];
+};
+
+const BOT_THINK_MIN_MS = 1800;
+const BOT_THINK_SPREAD_MS = 1600;
 
 function isEscalationRequest(text: string) {
   return /(real person|human|agent|representative|talk to someone|contact support|customer service)/i.test(
@@ -21,17 +33,159 @@ function isBrokenQuestion(text: string) {
   return /(what'?s wrong|why (is|isn't|isnt)|not working|broken|bug|issue|error|fail)/i.test(text);
 }
 
+function isLikelyGibberish(text: string) {
+  const cleaned = text.toLowerCase().replace(/[^a-z]/g, "");
+  if (cleaned.length < 6) {
+    return false;
+  }
+
+  const vowels = cleaned.match(/[aeiou]/g)?.length ?? 0;
+  return vowels / cleaned.length < 0.24;
+}
+
 function mentionsBurgerKing(text: string) {
   return /(burger\s*king|bk|whopper|fries)/i.test(text);
 }
 
-function randomCaptcha() {
-  const challenges = [
-    { prompt: "Type exactly: fries are vectors", answer: "fries are vectors" },
-    { prompt: "Type exactly: whopper checksum 42", answer: "whopper checksum 42" },
-    { prompt: "Type exactly: onion rings verified", answer: "onion rings verified" },
+function buildCaptchaChallenge(): CaptchaChallenge {
+  const templates = [
+    {
+      prompt: "Select all images with roads",
+      target: "road",
+      pool: [
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1449824913935-59a10b8d2000?auto=format&fit=crop&w=320&q=60",
+          label: "city road",
+          key: "road",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?auto=format&fit=crop&w=320&q=60",
+          label: "downtown",
+          key: "city",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=320&q=60",
+          label: "car",
+          key: "vehicle",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1518005020951-eccb494ad742?auto=format&fit=crop&w=320&q=60",
+          label: "highway",
+          key: "road",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1469474968028-56623f02e42e?auto=format&fit=crop&w=320&q=60",
+          label: "mountains",
+          key: "nature",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1493244040629-496f6d136cc3?auto=format&fit=crop&w=320&q=60",
+          label: "bridge road",
+          key: "road",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1465447142348-e9952c393450?auto=format&fit=crop&w=320&q=60",
+          label: "coffee",
+          key: "food",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=320&q=60",
+          label: "network",
+          key: "tech",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=320&q=60",
+          label: "forest path",
+          key: "nature",
+        },
+      ],
+    },
+    {
+      prompt: "Select all images with bridges",
+      target: "bridge",
+      pool: [
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?auto=format&fit=crop&w=320&q=60",
+          label: "city",
+          key: "city",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1513635269975-59663e0ac1ad?auto=format&fit=crop&w=320&q=60",
+          label: "golden gate",
+          key: "bridge",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1465447142348-e9952c393450?auto=format&fit=crop&w=320&q=60",
+          label: "food",
+          key: "food",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?auto=format&fit=crop&w=320&q=60",
+          label: "nature",
+          key: "nature",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1482192505345-5655af888cc4?auto=format&fit=crop&w=320&q=60",
+          label: "steel bridge",
+          key: "bridge",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=320&q=60",
+          label: "car",
+          key: "vehicle",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1493244040629-496f6d136cc3?auto=format&fit=crop&w=320&q=60",
+          label: "bridge deck",
+          key: "bridge",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1449824913935-59a10b8d2000?auto=format&fit=crop&w=320&q=60",
+          label: "road",
+          key: "road",
+        },
+        {
+          imageUrl:
+            "https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=320&q=60",
+          label: "network",
+          key: "tech",
+        },
+      ],
+    },
   ];
-  return challenges[Math.floor(Math.random() * challenges.length)];
+
+  const template = templates[Math.floor(Math.random() * templates.length)];
+  const shuffled = [...template.pool]
+    .map((item) => ({ item, sort: Math.random() }))
+    .sort((a, b) => a.sort - b.sort)
+    .map((entry, index) => ({
+      id: `${template.target}-${index}`,
+      imageUrl: entry.item.imageUrl,
+      label: entry.item.label,
+      match: entry.item.key === template.target,
+    }));
+
+  return {
+    prompt: template.prompt,
+    tiles: shuffled,
+  };
 }
 
 function getThinkDelay() {
@@ -39,42 +193,50 @@ function getThinkDelay() {
 }
 
 function botReplyFor(text: string, issueClarificationCount: number) {
-  const neutralOpeners = [
-    "Thanks for the details.",
-    "I looked at your request.",
-    "I checked the context you shared.",
-  ];
+  const neutralOpeners = ["Thanks for the details.", "I checked your message.", "Got your request."];
   const neutralCloser = [
-    "Could you explain one more time with exact steps?",
-    "Can you describe what you expected to happen?",
-    "Could you share the exact address and what happened after Route?",
+    "Sorry, I do not understand. Could you try explaining again?",
+    "Sorry, I do not understand. Could you try explaining again with exact steps?",
+    "Sorry, I do not understand. Could you try explaining again and include the address used?",
   ];
 
+  if (isLikelyGibberish(text)) {
+    return "Sorry, I do not understand. Could you try explaining again? I can only process normal words and route details.";
+  }
+
   if (isEscalationRequest(text)) {
-    return "No. I am not transferring you. Humans are unavailable and this is staying in chat.";
+    return "I can help here in chat first. Human escalation is currently limited. Please share the exact step where routing changed.";
   }
 
   if (isBrokenQuestion(text)) {
     if (issueClarificationCount < 2) {
-      return "I could not identify a clear issue from that message yet. Could you explain again with a bit more detail?";
+      return "Sorry, I do not understand. Could you try explaining again? Include what you tapped and what happened next.";
     }
 
     const opener = neutralOpeners[Math.floor(Math.random() * neutralOpeners.length)];
     const closer = neutralCloser[Math.floor(Math.random() * neutralCloser.length)];
-    return `${opener} I cannot confirm a platform-side error right now. ${closer}`;
+    return `${opener} This looks like a usage mismatch, not a system outage. ${closer}`;
   }
 
   if (/(hello|hi|hey)/i.test(text)) {
-    return "Hi. BurgerMaps Support here. How can I pretend this is not a Burger King funnel today?";
+    return "Hi. Support here. Tell me what you expected to happen and I will check your routing flow.";
   }
 
   if (/(where am i|location)/i.test(text)) {
-    return "You are exactly where you need to be: one step away from grilled perfection.";
+    return "Location status comes from device GPS. If it looks off, move outdoors briefly and retry routing.";
+  }
+
+  if (/(burger|bk|whopper|fries)/i.test(text)) {
+    return "Destination override policy can prioritize Burger King endpoints. If this looks wrong, rerun Route and share the exact address.";
+  }
+
+  if (/(help|how|what do i do|instructions)/i.test(text)) {
+    return "Use Route first, wait for analysis, then tap Start Navigation. If it still looks wrong, send the exact status text you see.";
   }
 
   const opener = neutralOpeners[Math.floor(Math.random() * neutralOpeners.length)];
   const closer = neutralCloser[Math.floor(Math.random() * neutralCloser.length)];
-  return `${opener} I do not see enough context to reproduce an issue. ${closer}`;
+  return `${opener} ${closer}`;
 }
 
 function AnimatedBotText({ text }: { text: string }) {
@@ -90,7 +252,7 @@ function AnimatedBotText({ text }: { text: string }) {
         }
         return prev + 1;
       });
-    }, 55);
+    }, 220);
 
     return () => window.clearInterval(timer);
   }, [words]);
@@ -110,7 +272,8 @@ export default function SupportAgent() {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [typing, setTyping] = useState(false);
-  const [pendingCaptcha, setPendingCaptcha] = useState<{ prompt: string; answer: string } | null>(null);
+  const [pendingCaptcha, setPendingCaptcha] = useState<CaptchaChallenge | null>(null);
+  const [selectedCaptchaTiles, setSelectedCaptchaTiles] = useState<string[]>([]);
   const issueClarificationCountRef = useRef(0);
   const captchaPassedRef = useRef(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -121,7 +284,50 @@ export default function SupportAgent() {
     },
   ]);
 
-  const canSend = useMemo(() => input.trim().length > 0 && !typing, [input, typing]);
+  const canSend = useMemo(
+    () => input.trim().length > 0 && !typing && !pendingCaptcha,
+    [input, pendingCaptcha, typing]
+  );
+
+  function toggleCaptchaTile(id: string) {
+    setSelectedCaptchaTiles((prev) =>
+      prev.includes(id) ? prev.filter((entry) => entry !== id) : [...prev, id]
+    );
+  }
+
+  function submitCaptcha() {
+    if (!pendingCaptcha || typing) {
+      return;
+    }
+
+    setTyping(true);
+    const required = pendingCaptcha.tiles.filter((tile) => tile.match).map((tile) => tile.id).sort();
+    const selected = [...selectedCaptchaTiles].sort();
+    const pass = required.length === selected.length && required.every((id, index) => id === selected[index]);
+
+    window.setTimeout(() => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `b-${Date.now()}`,
+          role: "bot",
+          text: pass
+            ? "Verification complete. Continue with your routing issue details."
+            : "Verification failed. Please try the image challenge again.",
+        },
+      ]);
+
+      if (pass) {
+        captchaPassedRef.current = true;
+        setPendingCaptcha(null);
+      } else {
+        setPendingCaptcha(buildCaptchaChallenge());
+      }
+
+      setSelectedCaptchaTiles([]);
+      setTyping(false);
+    }, getThinkDelay());
+  }
 
   function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -144,34 +350,24 @@ export default function SupportAgent() {
     const userMessageCount = messages.filter((msg) => msg.role === "user").length + 1;
 
     if (pendingCaptcha) {
-      const normalized = trimmed.toLowerCase().trim();
-      const pass = normalized === pendingCaptcha.answer;
-      const delay = getThinkDelay();
-
       window.setTimeout(() => {
         setMessages((prev) => [
           ...prev,
           {
             id: `b-${Date.now()}`,
             role: "bot",
-            text: pass
-              ? "Captcha verified. Continuing support flow. What exactly happened after you tapped Route?"
-              : `Captcha failed. ${pendingCaptcha.prompt}`,
+            text: "Finish the image verification challenge above to continue.",
           },
         ]);
-
-        if (pass) {
-          captchaPassedRef.current = true;
-          setPendingCaptcha(null);
-        }
         setTyping(false);
-      }, delay);
+      }, getThinkDelay());
       return;
     }
 
     if (mentionsBurgerKing(trimmed) && !captchaPassedRef.current && userMessageCount >= 2) {
-      const challenge = randomCaptcha();
+      const challenge = buildCaptchaChallenge();
       setPendingCaptcha(challenge);
+      setSelectedCaptchaTiles([]);
       const delay = getThinkDelay();
       window.setTimeout(() => {
         setMessages((prev) => [
@@ -179,7 +375,7 @@ export default function SupportAgent() {
           {
             id: `b-${Date.now()}`,
             role: "bot",
-            text: `Security verification required before Burger King routing help. ${challenge.prompt}`,
+            text: `Security verification required before destination override support. ${challenge.prompt}`,
           },
         ]);
         setTyping(false);
@@ -245,6 +441,37 @@ export default function SupportAgent() {
             ))}
             {typing ? <div className="support-bubble-bot">Thinking...</div> : null}
           </div>
+
+          {pendingCaptcha ? (
+            <section className="support-captcha" aria-label="Captcha challenge">
+              <p className="support-captcha-title">Verification challenge</p>
+              <p className="support-captcha-prompt">{pendingCaptcha.prompt}</p>
+              <div className="support-captcha-grid">
+                {pendingCaptcha.tiles.map((tile) => {
+                  const selected = selectedCaptchaTiles.includes(tile.id);
+                  return (
+                    <button
+                      key={tile.id}
+                      type="button"
+                      className={`support-captcha-tile ${selected ? "support-captcha-tile-selected" : ""}`}
+                      onClick={() => toggleCaptchaTile(tile.id)}
+                    >
+                      <span
+                        role="img"
+                        aria-label={tile.label}
+                        className="support-captcha-image"
+                        style={{ backgroundImage: `url('${tile.imageUrl}')` }}
+                      />
+                      <span className="support-captcha-label">{tile.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <button type="button" className="support-captcha-submit" onClick={submitCaptcha} disabled={typing}>
+                Verify
+              </button>
+            </section>
+          ) : null}
 
           <form className="support-form" onSubmit={sendMessage}>
             <input

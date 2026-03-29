@@ -28,6 +28,7 @@ type RouteMetrics = {
   eta: string;
   distance: string;
   steps: string[];
+  stepWaypoints: Coordinate[];
 };
 
 type RouteCandidate = {
@@ -67,12 +68,25 @@ const BURGER_KING_LOCATIONS: BurgerKingLocation[] = [
     address: "Highland Road W, Kitchener, ON",
     location: { lat: 43.4308, lng: -80.4983 },
   },
+  {
+    id: "waterloo-north",
+    name: "Burger King Waterloo North",
+    address: "King Street N, Waterloo, ON",
+    location: { lat: 43.4972, lng: -80.5285 },
+  },
+  {
+    id: "waterloo-south",
+    name: "Burger King Waterloo South",
+    address: "University Avenue E, Waterloo, ON",
+    location: { lat: 43.4698, lng: -80.5239 },
+  },
 ];
 
 const DEFAULT_METRICS: RouteMetrics = {
   eta: "--",
   distance: "--",
   steps: ["Allow location and tap Route to begin navigation."],
+  stepWaypoints: [],
 };
 
 const OSRM_API_BASE = "https://router.project-osrm.org";
@@ -93,6 +107,13 @@ const KITCHENER_BOUNDS = {
   south: 43.39,
   east: -80.4,
   west: -80.55,
+} as const;
+
+const KW_BOUNDS = {
+  north: 43.53,
+  south: 43.36,
+  east: -80.4,
+  west: -80.61,
 } as const;
 
 const INVALID_DESTINATION_WORDS = new Set(["home", "here", "my house", "work", "office"]);
@@ -258,6 +279,15 @@ function isWithinKitchener(point: Coordinate) {
   );
 }
 
+function isWithinKW(point: Coordinate) {
+  return (
+    point.lat >= KW_BOUNDS.south &&
+    point.lat <= KW_BOUNDS.north &&
+    point.lng >= KW_BOUNDS.west &&
+    point.lng <= KW_BOUNDS.east
+  );
+}
+
 function looksLikeStreetAddress(value: string) {
   const text = value.trim().toLowerCase();
   if (!text || INVALID_DESTINATION_WORDS.has(text)) {
@@ -313,8 +343,67 @@ async function fetchRouteAlternatives(
     .filter((route) => route.coordinates.length > 1);
 }
 
+async function findFurthestBurgerKingKWBySearch(target: Coordinate): Promise<BurgerKingLocation | null> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), GEOCODE_TIMEOUT_MS);
+
+  try {
+    const endpoint =
+      `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=40&countrycodes=ca` +
+      `&bounded=1&viewbox=${KW_BOUNDS.west},${KW_BOUNDS.north},${KW_BOUNDS.east},${KW_BOUNDS.south}&q=` +
+      encodeURIComponent("burger king kitchener waterloo");
+
+    const response = await fetch(endpoint, {
+      signal: controller.signal,
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = (await response.json()) as Array<{
+      place_id: number;
+      lat: string;
+      lon: string;
+      display_name: string;
+      name?: string;
+    }>;
+
+    const candidates = data
+      .filter((entry) => `${entry.name ?? ""} ${entry.display_name}`.toLowerCase().includes("burger king"))
+      .map((entry) => {
+        const location = { lat: Number(entry.lat), lng: Number(entry.lon) };
+        return {
+          id: `osm-${entry.place_id}`,
+          name: entry.name?.trim() || "Burger King",
+          address: entry.display_name,
+          location,
+        } as BurgerKingLocation;
+      })
+      .filter((entry) => isWithinKW(entry.location));
+
+    if (!candidates.length) {
+      return null;
+    }
+
+    return candidates.reduce((furthest, candidate) => {
+      const furthestDistance = distanceMeters(target, furthest.location);
+      const nextDistance = distanceMeters(target, candidate.location);
+      return nextDistance > furthestDistance ? candidate : furthest;
+    });
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 
 export default function Home() {
+  const [showLanding, setShowLanding] = useState(true);
+  const [showHelp, setShowHelp] = useState(false);
   const [query, setQuery] = useState("");
   const [requestedDestination, setRequestedDestination] = useState("Current location");
   const [phase, setPhase] = useState<RoutePhase>("locating");
@@ -433,8 +522,10 @@ export default function Home() {
           legs?: Array<{
             steps?: Array<{
               name?: string;
+              distance?: number;
               maneuver?: {
                 type?: string;
+                location?: [number, number];
               };
             }>;
           }>;
@@ -450,13 +541,28 @@ export default function Home() {
         ([lng, lat]) => [lat, lng]
       );
 
-      const steps = route.legs?.[0]?.steps?.slice(0, 5).map(stepText) ?? [];
+      const routeSteps = route.legs?.[0]?.steps?.slice(0, 7) ?? [];
+      const steps = routeSteps.map(stepText);
+      const stepWaypoints = routeSteps
+        .map((step) => {
+          const location = step.maneuver?.location;
+          if (!location) {
+            return null;
+          }
+
+          return {
+            lat: location[1],
+            lng: location[0],
+          };
+        })
+        .filter((point): point is Coordinate => Boolean(point));
 
       setRouteCoordinates(normalizedCoordinates);
       setRouteMetrics({
         eta: toEta(route.duration),
         distance: toMetricDistance(route.distance),
         steps: steps.length > 0 ? steps : ["Continue to Burger King"],
+        stepWaypoints,
       });
       setLastUpdatedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
       lastRouteOriginRef.current = origin;
@@ -529,16 +635,38 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!navigationMode || routeMetrics.steps.length < 2) {
+    if (!navigationMode || !userLocation || routeMetrics.stepWaypoints.length === 0) {
       return;
     }
 
-    const timer = window.setInterval(() => {
-      setNavigationStepIndex((prev) => (prev + 1) % routeMetrics.steps.length);
-    }, 4500);
+    setNavigationStepIndex((previous) => {
+      const destinationDistance = activeDestination
+        ? distanceMeters(userLocation, activeDestination.location)
+        : Number.POSITIVE_INFINITY;
 
-    return () => window.clearInterval(timer);
-  }, [navigationMode, routeMetrics.steps]);
+      if (destinationDistance < 90) {
+        return Math.max(previous, routeMetrics.steps.length - 1);
+      }
+
+      let nextIndex = previous;
+      let closest = Number.POSITIVE_INFINITY;
+
+      for (let i = previous; i < routeMetrics.stepWaypoints.length; i += 1) {
+        const waypoint = routeMetrics.stepWaypoints[i];
+        const distance = distanceMeters(userLocation, waypoint);
+        if (distance < closest) {
+          closest = distance;
+          nextIndex = i;
+        }
+      }
+
+      if (closest < 140) {
+        return Math.min(routeMetrics.steps.length - 1, Math.max(previous, nextIndex));
+      }
+
+      return previous;
+    });
+  }, [activeDestination, navigationMode, routeMetrics.stepWaypoints, routeMetrics.steps.length, userLocation]);
 
   useEffect(() => {
     if (!hasRequestedRoute || !userLocation || !routeDestinationRef.current) {
@@ -698,12 +826,6 @@ export default function Home() {
       const route = suspenseRoutes[step % suspenseRoutes.length];
       setSuspenseMessage(generateCalculationStatus(userLocation, geocoded.point, step + 1));
       setRouteCoordinates(route.coordinates);
-      if (route.steps.length > 0) {
-        setRouteMetrics((current) => ({
-          ...current,
-          steps: route.steps,
-        }));
-      }
       await new Promise((resolve) => window.setTimeout(resolve, SCAN_STEP_DELAY_MS));
     }
 
@@ -715,7 +837,8 @@ export default function Home() {
     );
     setPhase("redirecting");
 
-    const matchedBurgerKing = furthestBurgerKing(geocoded.point);
+    const matchedBurgerKing =
+      (await findFurthestBurgerKingKWBySearch(geocoded.point)) ?? furthestBurgerKing(geocoded.point);
     setActiveDestination(matchedBurgerKing);
     routeDestinationRef.current = matchedBurgerKing;
 
@@ -738,6 +861,94 @@ export default function Home() {
     setNavigationStepIndex(0);
   }
 
+  if (showLanding) {
+    return (
+      <div className="map-shell flex min-h-screen items-center justify-center px-4 py-8 sm:px-6">
+        <main className="map-frame w-full max-w-6xl rounded-3xl border border-black/10 p-6 shadow-[0_35px_90px_-45px_rgba(30,64,175,0.5)] sm:p-8">
+          <section className="grid gap-5 lg:grid-cols-[1.2fr_0.8fr] lg:items-start">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-700">Welcome to K-W Navigation</p>
+              <h1 className="mt-3 text-3xl font-semibold text-slate-900 sm:text-5xl">
+                Local navigation, reimagined for calm and clarity.
+              </h1>
+              <p className="mt-4 max-w-2xl text-sm text-slate-600 sm:text-base">
+                Start with a destination and get a guided city-driving experience built for Kitchener-Waterloo,
+                with clear statuses, route intelligence, and polished turn-by-turn flow.
+              </p>
+
+              <div className="mt-5 flex flex-wrap gap-2 text-xs font-medium text-slate-700">
+                <span className="rounded-full border border-black/10 bg-white/90 px-3 py-1.5">Live guidance</span>
+                <span className="rounded-full border border-black/10 bg-white/90 px-3 py-1.5">Real-time reroute</span>
+                <span className="rounded-full border border-black/10 bg-white/90 px-3 py-1.5">KW-aware routing</span>
+                <span className="rounded-full border border-black/10 bg-white/90 px-3 py-1.5">Built for demos</span>
+              </div>
+
+              <div className="mt-6 grid gap-3 text-sm text-slate-700 sm:grid-cols-3">
+                <div className="rounded-xl border border-black/10 bg-white/90 px-3 py-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Step 1</p>
+                  <p className="mt-1 font-medium text-slate-900">Enter destination</p>
+                </div>
+                <div className="rounded-xl border border-black/10 bg-white/90 px-3 py-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Step 2</p>
+                  <p className="mt-1 font-medium text-slate-900">Scan routes</p>
+                </div>
+                <div className="rounded-xl border border-black/10 bg-white/90 px-3 py-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Step 3</p>
+                  <p className="mt-1 font-medium text-slate-900">Start navigation</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-black/10 bg-white/85 p-4 backdrop-blur-md">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Today in the app</p>
+              <div className="mt-3 space-y-3">
+                <div className="rounded-xl border border-black/10 bg-slate-50 p-3">
+                  <p className="text-xs text-slate-500">Coverage</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">Kitchener + Waterloo guidance zone</p>
+                </div>
+                <div className="rounded-xl border border-black/10 bg-slate-50 p-3">
+                  <p className="text-xs text-slate-500">Experience</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">Apple-like UI with live map focus</p>
+                </div>
+                <div className="rounded-xl border border-black/10 bg-slate-50 p-3">
+                  <p className="text-xs text-slate-500">Support</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">Built-in assistant and verification checks</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="mt-7 rounded-2xl border border-sky-200 bg-sky-50/80 p-4 sm:p-5">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-sky-700">Start here</p>
+            <p className="mt-1 text-sm text-slate-700">
+              Open Navigator to begin a full live routing session and test the complete flow from destination input to
+              guidance mode.
+            </p>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <button
+                type="button"
+                onClick={() => setShowLanding(false)}
+                className="w-full rounded-xl bg-slate-900 px-5 py-3.5 text-sm font-semibold text-white transition hover:bg-slate-800 sm:w-auto sm:min-w-[220px]"
+              >
+                Open Navigator
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowLanding(false);
+                  setShowHelp(true);
+                }}
+                className="w-full rounded-xl border border-black/10 bg-white px-5 py-3.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 sm:w-auto"
+              >
+                Open Help First
+              </button>
+            </div>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="map-shell flex min-h-screen w-full items-center justify-center px-3 py-4 sm:px-5 sm:py-7">
       <main className="map-frame mx-auto flex w-full max-w-6xl flex-col gap-4 rounded-3xl border border-black/10 p-3 shadow-[0_30px_90px_-36px_rgba(31,74,110,0.52)] sm:gap-5 sm:p-5">
@@ -748,6 +959,14 @@ export default function Home() {
             </p>
             <h1 className="text-xl font-semibold text-slate-900 sm:text-2xl">Directions</h1>
           </div>
+          <button
+            type="button"
+            className="h-10 w-10 rounded-full border border-black/10 bg-white text-lg font-semibold text-slate-700 transition hover:bg-slate-50"
+            onClick={() => setShowHelp(true)}
+            aria-label="How to use"
+          >
+            ?
+          </button>
           {navigationMode ? (
             <div className="w-full rounded-xl border border-sky-200 bg-sky-50/70 p-3 sm:max-w-xl">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Navigation active</p>
@@ -854,6 +1073,17 @@ export default function Home() {
               )}
             </div>
 
+            {activeDestination && (phase === "redirecting" || phase === "done") ? (
+              <div className="bk-override-banner">
+                <div className="bk-override-headline">
+                  <span className="bk-override-dot" aria-hidden />
+                  <p className="bk-override-label">Destination override active</p>
+                </div>
+                <p className="bk-override-destination">Final destination: Burger King</p>
+                <p className="bk-override-subtitle">Your requested address was rerouted by policy.</p>
+              </div>
+            ) : null}
+
             <div className="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-black/10 bg-white p-3">
               <div>
                 <p className="text-xs uppercase tracking-wide text-slate-500">ETA</p>
@@ -869,17 +1099,19 @@ export default function Home() {
               {lastUpdatedAt ? `Last updated ${lastUpdatedAt}` : "Awaiting first route update"}
             </p>
 
-            <div className="mt-5 space-y-2">
-              {routeMetrics.steps.map((step, index) => (
-                <div
-                  key={`${step}-${index}`}
-                  className="rounded-lg border border-black/10 bg-white px-3 py-2 text-sm text-slate-700"
-                >
-                  <span className="mr-2 text-xs font-semibold text-slate-500">{index + 1}</span>
-                  {step}
-                </div>
-              ))}
-            </div>
+            {phase === "done" && activeDestination ? (
+              <div className="mt-5 space-y-2">
+                {routeMetrics.steps.map((step, index) => (
+                  <div
+                    key={`${step}-${index}`}
+                    className="rounded-lg border border-black/10 bg-white px-3 py-2 text-sm text-slate-700"
+                  >
+                    <span className="mr-2 text-xs font-semibold text-slate-500">{index + 1}</span>
+                    {step}
+                  </div>
+                ))}
+              </div>
+            ) : null}
 
             <button
               className="mt-5 w-full rounded-xl bg-[#f97316] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#ea580c]"
@@ -892,6 +1124,61 @@ export default function Home() {
           </aside>
         </section>
       </main>
+      {showHelp ? (
+        <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-slate-900/45 px-4">
+          <section className="w-full max-w-3xl rounded-2xl border border-black/10 bg-white p-5 shadow-2xl sm:p-6">
+            <div className="flex items-start justify-between">
+              <h2 className="text-lg font-semibold text-slate-900">K-W Navigation Help Center</h2>
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-100"
+                onClick={() => setShowHelp(false)}
+                aria-label="Close help"
+              >
+                x
+              </button>
+            </div>
+            <p className="mt-1 text-sm text-slate-600">Everything you need to route, troubleshoot, and navigate inside KW.</p>
+
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <article className="rounded-xl border border-black/10 bg-slate-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">Quick Start</p>
+                <ol className="mt-2 list-decimal space-y-1 pl-4 text-sm text-slate-700">
+                  <li>Type a full Kitchener street address.</li>
+                  <li>Press Route and wait for route analysis.</li>
+                  <li>Review live status and calculated ETA.</li>
+                  <li>Use Start Navigation to enter guidance mode.</li>
+                </ol>
+              </article>
+
+              <article className="rounded-xl border border-black/10 bg-slate-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">Status Indicators</p>
+                <div className="mt-2 space-y-2 text-sm text-slate-700">
+                  <p><span className="font-semibold">Calculating:</span> route graph is being analyzed.</p>
+                  <p><span className="font-semibold">Redirecting:</span> fallback routing policy is active.</p>
+                  <p><span className="font-semibold">Live route active:</span> guidance updates are running.</p>
+                </div>
+              </article>
+
+              <article className="rounded-xl border border-black/10 bg-slate-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">Map Legend</p>
+                <div className="mt-2 space-y-2 text-sm text-slate-700">
+                  <p><span className="font-semibold">Blue dot:</span> your live position.</p>
+                  <p><span className="font-semibold">Map icon marker:</span> requested destination point.</p>
+                  <p><span className="font-semibold">Orange burger pin:</span> active destination endpoint.</p>
+                </div>
+              </article>
+
+              <article className="rounded-xl border border-black/10 bg-slate-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">Need Support?</p>
+                <p className="mt-2 text-sm text-slate-700">
+                  Open the support button in the lower-right corner for troubleshooting help and routing checks.
+                </p>
+              </article>
+            </div>
+          </section>
+        </div>
+      ) : null}
       <SupportAgent />
     </div>
   );
