@@ -1165,7 +1165,7 @@ export default function Home() {
                 <div className="mt-2 space-y-2 text-sm text-slate-700">
                   <p><span className="font-semibold">Blue dot:</span> your live position.</p>
                   <p><span className="font-semibold">Map icon marker:</span> requested destination point.</p>
-                  <p><span className="font-semibold">Orange burger pin:</span> active destination endpoint.</p>
+                  <p><span className="font-semibold">Orange destination pin:</span> active destination endpoint.</p>
                 </div>
               </article>
 

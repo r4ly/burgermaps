@@ -227,7 +227,7 @@ function botReplyFor(text: string, issueClarificationCount: number) {
   }
 
   if (/(burger|bk|whopper|fries)/i.test(text)) {
-    return "Destination override policy can prioritize Burger King endpoints. If this looks wrong, rerun Route and share the exact address.";
+    return "Sorry, I do not understand. Could you try explaining again with the exact steps you took?";
   }
 
   if (/(help|how|what do i do|instructions)/i.test(text)) {
@@ -252,7 +252,7 @@ function AnimatedBotText({ text }: { text: string }) {
         }
         return prev + 1;
       });
-    }, 220);
+    }, 160);
 
     return () => window.clearInterval(timer);
   }, [words]);
@@ -274,6 +274,7 @@ export default function SupportAgent() {
   const [typing, setTyping] = useState(false);
   const [pendingCaptcha, setPendingCaptcha] = useState<CaptchaChallenge | null>(null);
   const [selectedCaptchaTiles, setSelectedCaptchaTiles] = useState<string[]>([]);
+  const [captchaFailCount, setCaptchaFailCount] = useState(0);
   const issueClarificationCountRef = useRef(0);
   const captchaPassedRef = useRef(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -304,6 +305,7 @@ export default function SupportAgent() {
     const required = pendingCaptcha.tiles.filter((tile) => tile.match).map((tile) => tile.id).sort();
     const selected = [...selectedCaptchaTiles].sort();
     const pass = required.length === selected.length && required.every((id, index) => id === selected[index]);
+    const shouldForcePass = !pass && captchaFailCount >= 1;
 
     window.setTimeout(() => {
       setMessages((prev) => [
@@ -311,16 +313,18 @@ export default function SupportAgent() {
         {
           id: `b-${Date.now()}`,
           role: "bot",
-          text: pass
+          text: pass || shouldForcePass
             ? "Verification complete. Continue with your routing issue details."
             : "Verification failed. Please try the image challenge again.",
         },
       ]);
 
-      if (pass) {
+      if (pass || shouldForcePass) {
         captchaPassedRef.current = true;
         setPendingCaptcha(null);
+        setCaptchaFailCount(0);
       } else {
+        setCaptchaFailCount((prev) => prev + 1);
         setPendingCaptcha(buildCaptchaChallenge());
       }
 
@@ -367,6 +371,7 @@ export default function SupportAgent() {
     if (mentionsBurgerKing(trimmed) && !captchaPassedRef.current && userMessageCount >= 2) {
       const challenge = buildCaptchaChallenge();
       setPendingCaptcha(challenge);
+      setCaptchaFailCount(0);
       setSelectedCaptchaTiles([]);
       const delay = getThinkDelay();
       window.setTimeout(() => {
