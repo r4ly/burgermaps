@@ -1030,7 +1030,7 @@ export default function Home() {
             </div>
 
             <p className="mt-2 text-xs text-slate-500">
-              Free stack: OSM tiles + Nominatim geocoding + OSRM routing (no paid keys)
+              Live routing is running with real-time map guidance.
             </p>
 
             {phase === "calculating" ? (
